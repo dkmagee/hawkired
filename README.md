@@ -6,18 +6,18 @@ HAWKIRED is a data processing pipeline written in python for the [ESO HAWK-I](ht
 Dependencies
 ------------
 
-You'll need to download and install:
+You'll need to install or have installed:
 
-1. The HAWKI pipeline pipeline distribution kit at <http://www.eso.org/sci/software/pipelines/hawki/hawki-pipe-recipes.html>
-2. The Python bindings for CPL at <https://github.com/olebole/python-cpl>
-3. Pyfits at <http://www.stsci.edu/institute/software_hardware/pyfits>
+1. The [HAWKI pipeline distribution](http://www.eso.org/sci/software/pipelines/hawki/hawki-pipe-recipes.html) kit.
+2. The Python bindings for CPL [python-cpl](https://github.com/olebole/python-cpl)
+3. [Pyfits](http://www.stsci.edu/institute/software_hardware/pyfits)
 
-For MacOSX I had to remove the "mcheck" from the line `libraries = [ 'cplcore', 'cpldfs', 'cplui', 'cpldrs', 'gomp', 'mcheck' ]`, in the setup.py file to get it to compile.
+Note: For MacOSX I had to remove the "mcheck" from the line `libraries = [ 'cplcore', 'cpldfs', 'cplui', 'cpldrs', 'gomp', 'mcheck' ]`, in the setup.py file to get PyCPL to compile.
 
 Downloading Data
 ----------------
 
-Download your data from the ESO Archive Data Portal using the "CalSelector" option this gives you the all the calibration data for each OB and and XML file <http://archive.eso.org/eso/eso_archive_main.html>.
+Download your data from the [ESO Archive Data Portal](http://archive.eso.org/eso/eso_archive_main.html) using the "CalSelector" option. Using this option gives you the all the calibration data for each OB (Observation Block) and and XML file which is used by HAWKIRED to 
 
 Running HAWKIRED
 ----------------
@@ -31,7 +31,7 @@ Running HAWKIRED
 
 Optional
 
-7. Edit and run mkfp (makes footprints of stiched OBs)
+7. Edit and run mkfp (makes footprints of stitched OBs)
 8. Edit an run mkdist
 
 Notes
@@ -51,5 +51,3 @@ You can extract the zeropoint for each OB/chip using the Python json module:
         for chip in chips:
             print '%s %s %s' % (ob, chip['CHIP'], chip['ZPOINT'])
 
-
-DKM 2012-09-14
