@@ -17,7 +17,7 @@ Note: For MacOSX I had to remove the "mcheck" from the line `libraries = [ 'cplc
 Downloading Data
 ----------------
 
-Download your data from the [ESO Archive Data Portal](http://archive.eso.org/eso/eso_archive_main.html) using the "CalSelector" option. Using this option gives you the all the calibration data for each OB (Observation Block) and and XML file which is used by HAWKIRED to 
+Download your data from the [ESO Archive Data Portal](http://archive.eso.org/eso/eso_archive_main.html) using the "CalSelector" option. Using this option gives you the all the calibration data for each OB (Observation Block) and and XML file which is used by HAWKIRED as input.
 
 Running HAWKIRED
 ----------------
@@ -38,7 +38,7 @@ Notes
 -----
 
 - You may want to comment out all but the first OB in do_all to do a test run.
-- *combine.fits are the all images combined from an OB. The files have 4 extensions - one for each HAWKI chip.
+- *combine.fits are the all images combined from an OB. The files have 4 extensions - one for each HAWK-I chip.
 - Stitched files are the mosaics stitched together from the 4 chips. These are for just reference only. DON'T USE THEM FOR SCIENCE.
 - The `runname_hawki_filter_zpt.json` files have the computed zeropoints from standard star observations for each OB
 
