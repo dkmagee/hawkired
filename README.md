@@ -1,10 +1,7 @@
 HAWKIRED Pipeline
 =================
 
-Download
---------
-
-
+HAWKIRED is a data processing pipeline written in python for the [ESO HAWK-I](http://www.eso.org/sci/facilities/paranal/instruments/hawki/) (High Acuity Wide field K-band Imager) instrument.
 
 Dependencies
 ------------
