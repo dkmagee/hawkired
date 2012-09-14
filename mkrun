@@ -22,4 +22,4 @@ xml_files = glob.glob(os.path.join(xmldir, 'HAWKI.*.xml'))
 with open('do_all', 'w') as f:
     f.write('export CPLDIR:%s\n' % cpldir)
     for i,x in enumerate(xml_files):
-        f.write('./hawkired %s_ob%03d_hawki_%s %s %s %s\n' % (name, filt, i, rawdir, outdir, x))
+        f.write('./hawkired %s_ob%03d_hawki_%s %s %s %s\n' % (name, i, filt, rawdir, outdir, x))
