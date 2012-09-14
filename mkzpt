@@ -1,0 +1,51 @@
+#!/usr/bin/env python
+
+import os, sys, glob
+import pyfits
+import json
+import numpy
+from optparse import OptionParser
+
+def parseZPoints(file):
+    """Parse a HAWKI pipeline zeropoint fits table. Returns a list of dicts; one dict for each chip."""
+    ftab = pyfits.open(file)
+    zdat = []
+    for i in range(1,5):
+        tdat = ftab[i].data
+        # convert the recarray a dict
+        ddat = [dict(zip(tdat.dtype.names, j)) for j  in tdat][0]
+        # values of the items in the dict are numpy dtypes so convert to native python types
+        for k,v in ddat.iteritems():
+            if not isinstance(v, str):
+                ddat[k] = numpy.asscalar(v)
+        zdat.append(ddat)
+    return zdat
+
+def main():
+    parser = OptionParser(usage='usage: %prog obdir/ob*dir outfile', version="%prog 0.0")
+    parser.add_option('-f', '--filter', action='store', dest='filtname', 
+                      default=None, help='only get zeropoints for OB with filter name FILTER', metavar='FILTER')
+    (options, args) = parser.parse_args()
+
+    if len(args) < 2:
+        parser.print_help()
+        sys.exit()
+
+    ob_dirs = args[:-1]
+    outf = args[-1]
+    filt = options.filtname
+    ob_zpts = {}
+    for ob in ob_dirs:
+        zpt_files = glob.glob(os.path.join(ob, 'products/*_std??_zpt.fits'))
+        for zf in zpt_files:
+            zpnt = parseZPoints(zf)
+            if filt:
+                if zpnt[0]['FILTER'] == filt:
+                    ob_zpts[ob] = zpnt
+            else:
+                ob_zpts[ob] = zpnt
+    with open(outf, 'w') as f:
+        json.dump(ob_zpts, f, sort_keys=True, indent=2)
+
+if __name__ == '__main__':
+    main()

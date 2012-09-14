@@ -1,0 +1,6 @@
+for i in uds_ob???_hawki_y
+    do
+        footprintfinder.py -d ${i}/products/${i}_stitched.fits
+        mv *footprint*.reg footprints
+        mv *footprint*.txt footprints
+    done

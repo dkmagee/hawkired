@@ -1,0 +1,668 @@
+#!/usr/bin/env python
+
+# 
+#  hawkired.py
+#  
+#  Created by Daniel Magee on 2012-08-17.
+#  Copyright 2012 UCO/Lick Observatory. All rights reserved.
+#
+
+import xml.etree.ElementTree as ET
+import os, sys, glob, shutil
+import errno
+import json
+import pyfits
+import cpl
+import log
+import logging
+from optparse import OptionParser
+import datetime
+from timeit import default_timer as timer
+
+
+def mkdirs(path):
+    try:
+        os.makedirs(path)
+    except OSError as exception:
+        if exception.errno != errno.EEXIST:
+            raise
+    
+class HAWKIPipeline(object):
+    """
+    HAWKIPipeline
+    =============
+    
+    HAWKI pipeline recipes implemented
+    ----------------------------------
+    hawki_cal_dark            -> calDark
+    hawki_cal_flat            -> calFlat
+    hawki_cal_zpoint          -> calZpoint
+    hawki_step_basic_calib    -> stepBasicCalib
+    hawki_step_compute_bkg    -> stepComputeBkg
+    hawki_step_subtract_bkg   -> stepSubtractBkg
+    hawki_step_combine        -> stepCombine
+    hawki_step_detect_obj     -> stepDetectObj
+    hawki_step_apply_dist     -> stepApplyDist
+    hawki_step_refine_offsets -> stepRefineOffsets
+    hawki_step_photom_2mass   -> stepPhotom2MASS
+    hawki_step_stitch         -> stepStitch
+    
+    HAWKI pipeline recipes not yet implemented
+    ------------------------------------------
+    hawki_step_stats          -> stepStats
+    hawki_util_stdstars       -> utilStdStars
+    hawki_util_extinction     -> utilExtinction
+    hawki_cal_distortion      -> calDistortion
+    hawki_sci_jitter          -> sciJitter
+    hawki_tec_filtchk         -> tecFiltChk
+    hawki_util_gendist        -> utilGenDist
+    """
+    def __init__(self, runname, xmlfile, indir, outdir, loglevel='info', copydata=False):
+        super(HAWKIPipeline, self).__init__()
+        self.runname = runname
+        self.xmlfile = os.path.abspath(xmlfile)
+        self.indir = os.path.abspath(indir)
+        self.outdir = os.path.abspath(outdir)
+        self.rundir = os.path.join(self.outdir, self.runname)
+        self.caldata = {}
+        self.caldata_file = os.path.join(self.rundir, '%s_caldata.json' % self.runname)
+        self.stepdata = {}
+        self.stepdata_file = os.path.join(self.rundir, '%s_stepdata.json' % self.runname)
+        self.drk_dir = os.path.join(self.rundir, 'dark')
+        self.flt_dir = os.path.join(self.rundir, 'flat')
+        self.jit_dir = os.path.join(self.rundir, 'jitter')
+        self.zpt_dir = os.path.join(self.rundir, 'zpoint')
+        self.ref_dir = os.path.join(self.rundir, 'ref')
+        self.sof_dir = os.path.join(self.rundir, 'sof')
+        self.prd_dir = os.path.join(self.rundir, 'products')
+        self.copydata = copydata
+        
+        # Initialize CPL
+        cpl.esorex.init()
+        
+        # Make the rundir
+        mkdirs(self.rundir)
+        
+        # Setup the logger
+        logfile = os.path.join(self.rundir, 'hawkired.log')
+        self.logger = log.setup_logger('hawkired', logfile)
+        if loglevel == 'debug':
+            self.logger.setLevel(logging.DEBUG)
+        else:
+            self.logger.setLevel(logging.INFO)
+
+    def linkData(self, filelist, outdir, obstype):
+        """
+        Links raw fits files to outdir while renaming using runname and obstype.
+        If copydata=True it will copy the data instead of creating a symlink.
+        """
+        outfiles = []
+        for i, img in enumerate(filelist):
+            if len(filelist) == 1:
+                iname = os.path.join(self.indir, filelist[0])
+                oname  = os.path.join(outdir, '%s_%s.fits' % (self.runname, obstype))
+            else:
+                iname = os.path.join(self.indir, img)
+                oname  = os.path.join(outdir, '%s_%s_%02d.fits' % (self.runname, obstype, i))
+            if self.copydata:
+                self.logger.info('Copying %s -> %s' % (iname, oname))
+                shutil.copy(iname, oname)
+            else:
+                self.logger.info('Linking %s -> %s' % (iname, oname))
+                os.symlink(iname, oname)
+            outfiles.append(oname)
+        return outfiles
+
+    def saveData(self, dtype):
+        """Saves the pipeline data dict to a JSON file"""
+        if dtype == 'step':
+            dfile = self.stepdata_file
+            dobj = self.stepdata
+        elif dtype == 'cal':
+            dfile = self.caldata_file
+            dobj = self.caldata
+        else:
+            self.logger.warning('Unable to save pipeline data')
+        with open(dfile, 'w') as f:
+            f.write(json.dumps(dobj, sort_keys=True, indent=2))
+        return
+        
+    def saveStepData(self):
+        """Saves the pipeline stepdata dict to a JSON file"""
+        self.logger.info('Saving pipeline stepdata')
+        self.saveData('step')
+        return
+
+    def saveCalData(self):
+        """Saves the pipeline caldata dict to a JSON file"""
+        self.logger.info('Saving pipeline caldata')
+        self.saveData('cal')
+        return
+
+    def loadData(self, dtype):
+        """Loads the pipeline steps JSON data to a dict"""
+        self.logger.info('Loading pipeline step data')
+        if dtype == 'step':
+            with open(self.stepdata_file) as f:
+                self.logger.info('Loading pipeline step data')
+                self.stepdata = json.load(f)
+        elif dtype == 'cal':
+            with open(self.caldata_file) as f:
+                self.logger.info('Loading pipeline cal data')
+                self.caldata = json.load(f)
+        else:
+            self.logger.warning('Unable to load pipeline data')
+        return
+
+    def setup(self):
+        """Setup builds the directory structure, renames and copies images into the appropriate directory"""
+        self.logger.info('Running setup.')
+        self.logger.info('Reading XML file: %s' % self.xmlfile)
+        tree = ET.parse(self.xmlfile)
+        doc = tree.getroot()
+    
+        # Set up directory structure
+        self.logger.info('Building directory tree')
+        dirs = [self.drk_dir, self.flt_dir, self.jit_dir, self.zpt_dir, self.ref_dir, self.sof_dir, self.prd_dir]
+        for d in dirs:
+            mkdirs(os.path.join(self.rundir, d))
+        # Now move to run directory
+        os.chdir(self.rundir)
+        # JITTER images
+        # gets sci images
+        self.logger.info('Extracting jitter file names')
+        jitter = ['%s.fits' % i.attrib['name'] for i in doc.findall('mainFiles/file')]
+        self.caldata['jit'] = self.linkData(jitter, self.jit_dir, 'jit')
+        self.stepdata['jitter_obs'] = self.caldata['jit']
+        
+        # gets flats for jit images
+        self.logger.info('Extracting flats file names for jitter images')
+        flats = ['%s.fits' % i.attrib['name'] for i in doc.findall('associatedFiles/association[@category="FLAT"]/mainFiles/file')]
+        self.caldata['jit_flt'] = self.linkData(flats, self.flt_dir, 'jit_flt')
+        
+        # gets darks for jit flats
+        self.logger.info('Extracting dark file names for jitter flats')
+        flat_darks = ['%s.fits' % i.attrib['name'] for i in doc.findall('associatedFiles/association[@category="FLAT"]/associatedFiles/association[@category="DARK"]/mainFiles/file')]
+        self.caldata['jit_flt_drk'] = self.linkData(flat_darks, self.drk_dir, 'jit_flt_drk')
+    
+        # gets darks for jit images
+        self.logger.info('Extracting dark file names for jitter images')
+        darks = ['%s.fits' % i.attrib['name'] for i in doc.findall('associatedFiles/association[@category="DARK"]/mainFiles/file')]
+        self.caldata['jit_drk'] = self.linkData(darks, self.drk_dir, 'jit_drk')
+    
+        # ZPOINT images 
+        std_objs = doc.findall('associatedFiles/association[@category="STD"]')
+        for s, std in enumerate(std_objs):
+            if std.attrib['complete'] == 'true':
+                # gets standard images
+                self.logger.info('Extracting zpoint file names')
+                stds = ['%s.fits' % i.attrib['name'] for i in std.findall('mainFiles/file')]
+                otype = 'std%02d' % s
+                self.caldata[otype] = self.linkData(stds, self.zpt_dir, otype)
+        
+                # gets zpoint flats
+                self.logger.info('Extracting flat file names for zpoint images')
+                flats = ['%s.fits' % i.attrib['name'] for i in std.findall('associatedFiles/association[@category="FLAT"]/mainFiles/file')]
+                otype = 'std%02d_flt' % s
+                self.caldata[otype] = self.linkData(flats, self.flt_dir, otype)
+        
+                # gets darks for zpoint flats
+                self.logger.info('Extracting dark file names for zpoint flat images')
+                flat_darks = ['%s.fits' % i.attrib['name'] for i in std.findall('associatedFiles/association[@category="FLAT"]/associatedFiles/association[@category="DARK"]/mainFiles/file')]
+                otype = 'std%02d_flt_drk' % s
+                self.caldata[otype] = self.linkData(flat_darks, self.drk_dir, otype)
+        
+                # gets darks for std images - use jit_drk (master dark)
+                # darks = ['%s.fits' % i.attrib['name'] for i in std.findall('associatedFiles/association[@category="DARK"]/mainFiles/file')]
+                # otype = 'std%02d_drk' % s
+                # self.caldata['std'][otype] = self.linkData(darks, self.drk_dir, otype)
+                
+                # gets star catalog for zpoint images
+                self.logger.info('Extracting star catalog file names for zpoint images')
+                cats = ['%s.fits' % i.attrib['name'] for i in std.findall('associatedFiles/association[@category="STDSTARS_CATS"]/mainFiles/file')]
+                otype = 'std%02d_cat' % s
+                self.caldata[otype] = self.linkData(cats, self.ref_dir, otype)
+        # DISTORTION_X image
+        self.logger.info('Extracting x-distortion file name')
+        distx = ['%s.fits' % i.attrib['name'] for i in doc.findall('associatedFiles/association[@category="REF_DISTORTION_X"]/mainFiles/file')]
+        if distx == []:
+            self.logger.warning('Catagory attribute REF_DISTORTION_X not found! Trying DISTORTION_X')
+            distx = ['%s.fits' % i.attrib['name'] for i in doc.findall('associatedFiles/association[@category="DISTORTION_X"]/mainFiles/file')]
+        self.caldata['dst_x'] = self.linkData(distx, self.ref_dir, 'dst_x')
+        # DISTORTION_Y image
+        self.logger.info('Extracting y-distortion file name')
+        disty = ['%s.fits' % i.attrib['name'] for i in doc.findall('associatedFiles/association[@category="REF_DISTORTION_Y"]/mainFiles/file')]
+        if disty == []:
+            self.logger.warning('Catagory attribute REF_DISTORTION_Y not found! Trying DISTORTION_Y')
+            disty = ['%s.fits' % i.attrib['name'] for i in doc.findall('associatedFiles/association[@category="DISTORTION_Y"]/mainFiles/file')]
+        self.caldata['dst_y'] = self.linkData(disty, self.ref_dir, 'dst_y')
+        # get all observation types
+        self.obstypes = self.caldata.keys()
+        self.saveCalData()
+        return
+    
+    # HAWKI CPL Receipes    
+    def calDark(self, files, obstype):
+        """*calDark* creates a dark, a bad pixel image, and computes the read-out noise of the detectors"""
+        self.logger.info('Running calDark on obstype %s' % obstype)
+        cal_dark = cpl.Recipe('hawki_cal_dark')
+        self.logger.debug([os.path.basename(i) for i in files])
+        result = cal_dark(raw_DARK=files)
+        outname = '%s_%s.fits' % (self.runname, obstype)
+        output = os.path.join(self.prd_dir, outname)
+        self.logger.info('calDark output DARK_IM: %s' % os.path.basename(output))
+        result.DARK_IM.writeto(output, clobber=True)
+        output = output.replace('.fits', '_bpm.fits')
+        self.logger.info('calDark output BPM_HOT: %s' % os.path.basename(output))
+        result.BPM_HOT.writeto(output, clobber=True)
+        self.logger.info('Finished calDark on obstype %s' % obstype)
+        return
+        
+    def calFlat(self, files, obstype, dark, bpm):
+        """*calFlat* creates flat field from twilight observations, a bad pixels map, and various statistics"""
+        self.logger.info('Running calFlat on obstype %s' % obstype)
+        cal_flat = cpl.Recipe('hawki_cal_flat')
+        self.logger.debug([os.path.basename(i) for i in files])
+        result = cal_flat(raw_FLAT=files, calib_DARK_IM=dark, calib_BPM_HOT=bpm)
+        outname = '%s_%s.fits' % (self.runname, obstype)
+        output = os.path.join(self.prd_dir, outname)
+        self.logger.info('calFlat output FLAT_IM: %s' % os.path.basename(output))
+        result.FLAT_IM.writeto(output, clobber=True)
+        output = output.replace('.fits', '_bpm.fits')
+        self.logger.info('calFlat output BPM: %s' % os.path.basename(output))
+        result.BPM.writeto(output, clobber=True)
+        self.logger.info('Finished calFlat on obstype %s' % obstype)
+        return
+        
+    def calZpoint(self, files, obstype, flat, bpm, cat):
+        """*calZpoint* computes the zero point values of the detectors"""
+        self.logger.info('Running calZpoint on obstype %s' % obstype)
+        cal_zpoint = cpl.Recipe('hawki_cal_zpoint')
+        self.logger.debug([os.path.basename(i) for i in files])
+        self.logger.info('%s %s %s' % (flat, bpm, cat))
+        result = cal_zpoint(raw_ZPOINT=files, calib_FLAT_IM=flat, calib_BPM=bpm, calib_STDSTARS_CATS=cat)
+        outname = '%s_%s_zpt.fits' % (self.runname, obstype)
+        output = os.path.join(self.prd_dir, outname)
+        self.logger.info('calZpoint output ZPOINT_RES: %s' % os.path.basename(output))
+        result.ZPOINT_RES.writeto(output, clobber=True)
+        output = output.replace('.fits', '_stats.fits')
+        self.logger.info('calZpoint output ZPOINT_STATS: %s' % os.path.basename(output))
+        result.ZPOINT_STATS.writeto(output, clobber=True)
+        self.logger.info('Finished calZpoint on obstype %s' % obstype)
+        return
+
+    def stepBasicCalib(self, files, flat, bpm, dark):
+        """
+        *stepBasicCalib* applies the basic calibrations: flat, dark and bpm to science images (jitter_obs files).
+        Input:
+            - files: a list of the JITTER_OBS files
+            - flat: the jitter FLAT_IM file
+            - bpm: the jitter BPM (bad pixel map) file
+            - dark: the jitter DARK_IM file
+        Output: the BASIC_CALIBRATED files (run_name_obj_ii.fits).
+        """
+        self.logger.info('Running stepBasicCalib')
+        outfiles = []
+        step_basic_calib = cpl.Recipe('hawki_step_basic_calib')
+        self.logger.debug([os.path.basename(i) for i in files])
+        self.logger.info('%s %s %s' % (flat, bpm, dark))
+        result = step_basic_calib(raw_JITTER_OBS=files, calib_FLAT_IM=flat, calib_BPM=bpm, calib_DARK_IM=dark)
+        for i, obj in enumerate(result.BASIC_CALIBRATED):
+            outname = '%s_obj_%02d.fits' % (self.runname, i)
+            output = os.path.join(self.prd_dir, outname)
+            self.logger.info('stepBasicCalib output BASIC_CALIBRATED: %s' % outname)
+            obj.writeto(output, clobber=True)
+            outfiles.append(output)
+        self.logger.debug(outfiles)
+        self.stepdata['basic_calibrated_files'] = outfiles
+        self.saveStepData()
+        self.logger.info('Finised stepBasicCalib')
+        return
+    
+    def stepComputeBkg(self, files, obj_mask=None):
+        """
+        *stepComputeBkg* computes the background of a set of science images. If a mask is give objects are masked out.
+        Input:
+            - files: a list of the BASIC_CALIBRATED files
+            - obj_mask: an optional OBJ_MASK file 
+        Output: the BKG_IM files (run_name_bkg_ii.fits). If an OBJ_MASK file, then BKG_BPM files (run_name_bkg_bpm_ii.fits) are saved.
+        """
+        self.logger.info('Running stepComputeBkg')
+        outfiles = []
+        step_compute_bkg = cpl.Recipe('hawki_step_compute_bkg')
+        self.logger.debug([os.path.basename(i) for i in files])
+        self.logger.info('%s' % obj_mask)
+        if obj_mask:
+            self.logger.info('Using object mask file: %s' % obj_mask)
+            result = step_compute_bkg(raw_BASIC_CALIBRATED=files, calib_OBJ_MASK=obj_mask)
+        else:
+            result = step_compute_bkg(raw_BASIC_CALIBRATED=files)
+        for i, obj in enumerate(result.BKG_IM):
+            outname = '%s_bkg_%02d.fits' % (self.runname, i)
+            output = os.path.join(self.prd_dir, outname)
+            self.logger.info('stepComputeBkg output BKG_IM: %s' % outname)
+            obj.writeto(output, clobber=True)
+            outfiles.append(output)
+        self.logger.debug(outfiles)
+        self.stepdata['bkg_im_files'] = outfiles
+        if obj_mask:
+            outfiles =  []
+            for i, obj in enumerate(result.BKG_BPM):
+                outname = '%s_bkg_bpm_%02d.fits' % (self.runname, i)
+                output = os.path.join(self.prd_dir, outname)
+                self.logger.info('stepComputeBkg output BKG_BPM: %s' % outname)
+                obj.writeto(output, clobber=True)
+                outfiles.append(output)
+            self.stepdata['bkg_bpm_files'] = outfiles
+        self.saveStepData()
+        self.logger.info('Finished stepComputeBkg')
+        return
+    
+    def stepSubtractBkg(self, bcfiles, bfiles):
+        """
+        *stepSubtractBkg* subtracts the background of all the input object images.
+        Input:
+            - bcfiles: a list of the BASIC_CALIBRATED files
+            - bfiles: a list of the BKG_IM files
+        Output: the BKG_SUBTRACTED files (run_name_bkg_sub_ii.fits)
+        """
+        self.logger.info('Running stepSubtractBkg')
+        outfiles = []
+        step_subtract_bkg = cpl.Recipe('hawki_step_subtract_bkg')
+        self.logger.debug([os.path.basename(i) for i in bcfiles])
+        self.logger.debug([os.path.basename(i) for i in bfiles])
+        result = step_subtract_bkg(raw_BASIC_CALIBRATED=bcfiles, raw_BKG_IM=bfiles)
+        for i, obj in enumerate(result.BKG_SUBTRACTED):
+            outname = '%s_bkg_sub_%02d.fits' % (self.runname, i)
+            output = os.path.join(self.prd_dir, outname)
+            self.logger.info('stepSubtractBkg output BKG_SUBTRACTED: %s' % outname)
+            obj.writeto(output, clobber=True)
+            outfiles.append(output)
+        self.logger.debug(outfiles)
+        self.stepdata['bkg_subtracted_files'] = outfiles
+        self.saveStepData()
+        self.logger.info('Finished stepSubtractBkg')
+        return
+    
+    def stepCombine(self, files):
+        """
+        *stepCombine* combines jittered images into one single image taking into account the offsets.
+        Input:
+            - files: a the BKG_SUBTRACTED files
+        Output: the COMBINED file (run_name_combined.fits)
+        """
+        self.logger.info('Running stepCombine')
+        step_combine = cpl.Recipe('hawki_step_combine') 
+        self.logger.debug([os.path.basename(i) for i in files])
+        result = step_combine(raw_BKG_SUBTRACTED=files)
+        outname = '%s_combine.fits' % (self.runname)
+        output = os.path.join(self.prd_dir, outname)
+        self.logger.info('stepCombine output COMBINED: %s' % outname)
+        result.COMBINED.writeto(output, clobber=True)
+        result.COMBINED_CONTRIB_MAP.writeto(output.replace('.fits', '_contrib_map.fits'), clobber=True)
+        self.logger.debug(output)
+        self.stepdata['combined_file'] = output
+        self.saveStepData()
+        self.logger.info('Finished stepCombine')
+        return
+    
+    def stepDetectObj(self, file):
+        """
+        *stepDetectObj* detects the objects above a certain threshold and characterizes their properties.
+        Input:
+            - file: a COMBINED file
+        Output: an OBJ_MASK file (run_name_obj_mask.fits) and a OBJ_STARS (run_name_obj_stars.fits)
+        """
+        self.logger.info('Running stepDetectObj')
+        step_detect_obj = cpl.Recipe('hawki_step_detect_obj') 
+        self.logger.debug([os.path.basename(file)])
+        result = step_detect_obj(raw_COMBINED=file)
+        outname = '%s_obj_mask.fits' % (self.runname)
+        output = os.path.join(self.prd_dir, outname)
+        self.logger.info('stepDetectObj output OBJ_MASK: %s' % outname)
+        result.OBJ_MASK.writeto(output, clobber=True)
+        self.logger.debug(output)
+        self.stepdata['obj_mask_file'] = output
+        outname = '%s_obj_stars.fits' % (self.runname)
+        output = os.path.join(self.prd_dir, outname)
+        self.logger.info('stepDetectObj output OBJ_STARS: %s' % outname)
+        result.OBJ_PARAM.writeto(output, clobber=True)
+        self.logger.debug(output)
+        self.stepdata['obj_stars_file'] = output
+        self.saveStepData()
+        self.logger.info('Finished stepDetectObj')
+        return
+
+    def stepApplyDist(self, files, xdist, ydist):
+        """
+        *stepApplyDist* applies the distortion correction to the input framest.
+        Input:
+            - files: a list of the BKG_SUBTRACTED files
+            - xdist: the DISTORTION_X file
+            - ydist: the DISTORTION_Y file
+        Output: the DIST_CORRECTED files (run_name_dist_ii.fits).
+        """
+        self.logger.info('Running stepApplyDist')
+        outfiles = []
+        step_apply_dist = cpl.Recipe('hawki_step_apply_dist')
+        self.logger.debug([os.path.basename(i) for i in files])
+        result = step_apply_dist(raw_BKG_SUBTRACTED=files, calib_DISTORTION_X=xdist, calib_DISTORTION_Y=ydist)
+        for i, obj in enumerate(result.DIST_CORRECTED):
+            outname = '%s_dist_%02d.fits' % (self.runname, i)
+            output = os.path.join(self.prd_dir, outname)
+            self.logger.info('stepApplyDist output DIST_CORRECTED: %s' % outname)
+            obj.writeto(output, clobber=True)
+            outfiles.append(output)
+        self.logger.debug(outfiles)
+        self.stepdata['dist_corrected_files'] = outfiles
+        self.saveStepData()
+        self.logger.info('Finished stepApplyDist')
+        return
+
+    def stepRefineOffsets(self, files, obj_stars):
+        """
+        *stepRefineOffsets* computes refined offsets using correlation between the images at the brightest objects. It achieves subpixel accuracy.
+        Input:
+            - files: a list of the DIST_CORRECTED files
+            - obj_stars: the OBJ_PARAM file (_obj_stars.fits file)
+        Output: the OFFSETS_REFINED file (run_name_offsets_refined.fits).
+        """
+        self.logger.info('Running stepRefineOffsets')
+        step_refine_offsets = cpl.Recipe('hawki_step_refine_offsets')
+        self.logger.debug([os.path.basename(i) for i in files])
+        result = step_refine_offsets(raw_DIST_CORRECTED=files, calib_OBJ_PARAM=obj_stars)
+        outname = '%s_offsets_refined.fits' % (self.runname)
+        output = os.path.join(self.prd_dir, outname)
+        self.logger.info('stepRefineOffsets output OFFSETS_REFINED: %s' % outname)
+        result.OFFSETS_REFINED.writeto(output, clobber=True)
+        self.logger.debug(output)
+        self.stepdata['offsets_refined_file'] = output
+        self.saveStepData()
+        self.logger.info('Finished stepRefineOffsets')
+        return
+    
+    def stepCombineFinal(self, dcfiles, bbfiles, bpmfile, orfile):
+        """
+        *stepCombineFinal* combines distort corrected images into one single image taking into account the offsets.
+            - dcfiles: are the DIST_CORRECTED files
+            - bbfiles: are the BKG_BPM files
+            - bpmfile: is the BPM file
+            - orfile: is the OFFSETS_REFINED file
+        Returns the file name of the combine file created.
+        """
+        self.logger.info('Running stepCombineFinal')
+        step_combine = cpl.Recipe('hawki_step_combine') 
+        self.logger.debug([os.path.basename(i) for i in dcfiles])
+        result = step_combine(raw_DIST_CORRECTED=dcfiles, calib_BKG_BPM=bbfiles, calib_BPM=bpmfile, calib_OFFSETS_REFINED=orfile)
+        outname = '%s_combine.fits' % (self.runname)
+        output = os.path.join(self.prd_dir, outname)
+        self.logger.info('stepCombine output COMBINED: %s' % outname)
+        result.COMBINED.writeto(output, clobber=True)
+        self.logger.debug(output)
+        self.stepdata['final_combined_file'] = output
+        self.saveStepData()
+        self.logger.info('Finished stepCombineFinal')
+        return
+        
+    def stepPhotom2MASS(self, cfile, opfile, m2mass_cat):
+        """
+        *stepPhotom2MASS* computes the photometry of a given field based on the 2MASS catalog.
+        Inuput
+            - cfile: a COMBINED file
+            - odfile: a OBJ_PARAM file (output of stepDetectObj)
+            - m2mass_cat: CAT_2MASS the master 2MASS fits table file (master_2mass_tbl.fits)
+        Output - a ZPOINT_RES fits table file (run_name_zpoint.fits)
+        """
+        self.logger.info('Running stepPhotom2MASS')
+        step_combine = cpl.Recipe('hawki_step_photom_2mass') 
+        self.logger.debug(os.path.basename(cfile))
+        result = step_combine(raw_COMBINED=cfile, calib_OBJ_PARAM=opfile, calib_CAT_2MASS=m2mass_cat)
+        outname = '%s_zpoint.fits' % (self.runname)
+        output = os.path.join(self.prd_dir, outname)
+        self.logger.info('stepPhotom2MASS output ZPOINT_RES: %s' % outname)
+        result.ZPOINT_RES.writeto(output, clobber=True)
+        self.logger.debug(output)
+        self.stepdata['final_zpoint_file'] = output
+        self.saveStepData()
+        self.logger.info('Finished stepPhotom2MASS')
+        return
+    
+    def stepStitch(self, file):
+        """
+        *stepStitch* creates a single image out of the four HAWK-I chip.
+        Inuput
+            - file: a COMBINED file
+        Output - a STITCHED file (run_name_stitched.fits)
+        """
+        self.logger.info('Running stepStitch')
+        step_stitch = cpl.Recipe('hawki_step_stitch') 
+        self.logger.debug(os.path.basename(file))
+        result = step_stitch(raw_COMBINED=file)
+        outname = '%s_stitched.fits' % (self.runname)
+        output = os.path.join(self.prd_dir, outname)
+        self.logger.info('stepCombine output STITCHED: %s' % outname)
+        result.STITCHED.writeto(output, clobber=True)
+        self.logger.debug(output)
+        self.stepdata['stitched_file'] = output
+        self.saveStepData()
+        self.logger.info('Finished stepStitch')
+        return
+
+def main():
+    parser = OptionParser(usage='usage: %prog [options] run_name xml_file input_dir output_dir', version="%prog 1.0")
+    parser.add_option('-z', '--zpoint', action='store_true', dest='zpoint', default=True, help='do zpoint processing (default=on)')
+    parser.add_option('-l', '--log_level', action='store', type='choice', choices=['info', 'debug',], dest='loglevel', default='info', help='logging output level')
+    (options, args) = parser.parse_args()
+
+    if len(args) < 1:
+        parser.print_help()
+        sys.exit()
+    
+    run_name = args[0]
+    xml_file = args[1]
+    raw_dir = args[2]
+    out_dir = args[3]
+    procdir = os.path.join(out_dir, run_name)
+    
+    start_time = timer()
+    
+    hawki = HAWKIPipeline(run_name,  xml_file, raw_dir, out_dir, loglevel=options.loglevel)
+    hawki.setup()
+    
+    # ===================================================
+    # = Procsess all dark, flat and zpoint observations =
+    # ===================================================
+    
+    # process all darks
+    if options.zpoint:
+        dark_ot = [i for i in hawki.obstypes if 'drk' in i]
+    else:
+        dark_ot = [i for i in hawki.obstypes if 'drk' in i and 'std' not in i]
+    for ot in dark_ot:
+        hawki.calDark(hawki.caldata[ot], ot)
+    
+    # process all flats
+    if options.zpoint:
+        flat_ot = [i for i in hawki.obstypes if 'flt' in i and 'drk' not in i]
+    else:
+        flat_ot = [i for i in hawki.obstypes if 'flt' in i and 'drk' not in i and 'std' not in i]
+    for ot in flat_ot:
+        # get the dark and bpm files
+        drk_file = os.path.join(hawki.prd_dir, '%s_%s_drk.fits' % (run_name, ot))
+        if not os.path.exists(drk_file):
+            # use the master dark
+            drk_file = os.path.join(hawki.prd_dir, '%s_jit_drk.fits' % (run_name))
+        bpm_file = drk_file.replace('.fits', '_bpm.fits')
+        hawki.calFlat(hawki.caldata[ot], ot, drk_file, bpm_file)
+    
+    if options.zpoint:
+        # process all zpoint files
+        std_ot = [i for i in hawki.obstypes if 'std' in i and '_' not in i]
+        for ot in std_ot:
+            # get the flat and bpm and cat files
+            flt_file = os.path.join(hawki.prd_dir, '%s_%s_flt.fits' % (run_name, ot))
+            if not os.path.exists(flt_file):
+                # use the master flat
+                flt_file = os.path.join(hawki.prd_dir, '%s_jit_flt.fits' % (run_name))
+            bpm_file = flt_file.replace('.fits', '_bpm.fits')
+            cat_file = os.path.join(hawki.ref_dir, '%s_%s_cat.fits' % (run_name, ot))
+            hawki.calZpoint(hawki.caldata[ot], ot, flt_file, bpm_file, cat_file)
+    
+    # =======================================
+    # = Process jitter science observations =
+    # =======================================
+    
+    # from now on object type is jit
+    # run basic calibration on all the jitter files
+    hawki.stepdata['master_flat_file'] = os.path.join(hawki.prd_dir, '%s_%s_flt.fits' % (run_name, 'jit'))
+    hawki.stepdata['master_bpm_file'] = hawki.stepdata['master_flat_file'].replace('.fits', '_bpm.fits')
+    hawki.stepdata['master_dark_file'] = hawki.stepdata['master_flat_file'].replace('.fits', '_drk.fits')
+    hawki.stepBasicCalib(hawki.caldata['jit'], hawki.stepdata['master_flat_file'], hawki.stepdata['master_bpm_file'], hawki.stepdata['master_dark_file'])
+    
+    # first pass background subtraction
+    # compute background on basic calibrated files
+    hawki.stepComputeBkg(hawki.stepdata['basic_calibrated_files'])
+    
+    # run background subtraction on basic calibrated files
+    hawki.stepSubtractBkg(hawki.stepdata['basic_calibrated_files'], hawki.stepdata['bkg_im_files'])
+    
+    # combine the background subtracted images
+    hawki.stepCombine(hawki.stepdata['bkg_subtracted_files'])
+    
+    # run object detection on combined image
+    hawki.stepDetectObj(hawki.stepdata['combined_file'])
+    
+    # second pass background subtraction
+    # run compute background on basic calibrated files using object mask
+    hawki.stepComputeBkg(hawki.stepdata['basic_calibrated_files'], obj_mask=hawki.stepdata['obj_mask_file'])
+    
+    # run background subtraction on basic calibrated files again
+    hawki.stepSubtractBkg(hawki.stepdata['basic_calibrated_files'], hawki.stepdata['bkg_im_files'])
+    
+    # correct for distortion
+    xdist = os.path.join(hawki.ref_dir, '%s_dst_x.fits' % run_name)
+    ydist = os.path.join(hawki.ref_dir, '%s_dst_y.fits' % run_name)
+    hawki.stepApplyDist(hawki.stepdata['bkg_subtracted_files'], xdist, ydist)
+    
+    # refine offsets
+    hawki.stepRefineOffsets(hawki.stepdata['dist_corrected_files'], hawki.stepdata['obj_stars_file'])
+    
+    # combine final distortion corrected images
+    hawki.stepCombineFinal(hawki.stepdata['dist_corrected_files'], hawki.stepdata['bkg_bpm_files'],  hawki.stepdata['master_bpm_file'], hawki.stepdata['offsets_refined_file'])
+    
+    
+    # run object detection on final combined image again
+    hawki.stepDetectObj(hawki.stepdata['final_combined_file'])
+    
+    # run photometric calibration using 2MASS catalog
+    hawki.stepPhotom2MASS(hawki.stepdata['final_combined_file'], hawki.stepdata['obj_stars_file'], '/Volumes/DataRaid3/Data/ESO/HAWKI/UDS-Y/master_2mass_tbl.fits')
+    
+    # create stitched image
+    hawki.stepStitch(hawki.stepdata['final_combined_file'])
+    
+    end_time = timer()
+    elapsed_time = end_time - start_time
+    print 'Total run time (h:m:s): %s' % (str(datetime.timedelta(seconds=elapsed_time)))
+
+if __name__ == '__main__':
+    main()

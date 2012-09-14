@@ -1,0 +1,7 @@
+for i in uds_ob???_hawki_y
+    do
+        cp ${i}/products/${i}_combine.fits uds_hawki_y/
+        cp ${i}/products/${i}_combine_contrib_map.fits uds_hawki_y/
+        cp ${i}/products/${i}_stitched.fits uds_hawki_y/
+        cp footprints/${i}_stitched_footprint_ds9_linear.reg uds_hawki_y/
+    done

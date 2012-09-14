@@ -1,0 +1,20 @@
+# moves data into directories
+mkdir raw
+mkdir xml
+mkdir nightlog
+mkdir footprints
+
+mv *.fits raw
+mv *.fits.Z raw
+# if you get "bash: /bin/mv: Argument list too long" error, try break the mv into smaller bits
+# mv HAWKI.2007*.fits.Z raw
+# mv HAWKI.2008*.fits.Z raw
+# mv HAWKI.2009*.fits.Z raw
+# mv HAWKI.2010*.fits.Z raw
+# mv HAWKI.2011*.fits.Z raw
+# mv HAWKI.2012*.fits.Z raw
+mv *.xml xml
+mv *.NL.txt nightlog
+
+cd raw
+uncompress *.Z

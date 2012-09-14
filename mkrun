@@ -1,0 +1,25 @@
+#!/usr/bin/env python
+
+import os, glob
+
+### BEGIN EDIT ###
+
+# Name of the field
+name = 'uds'
+# Name of filter
+filt = 'y'
+# Path to where you installed the ESO HAWKI pipeline kit
+cpldir = '/Users/magee/Dropbox/Working/pipelines/hawki'
+# Directory with the data
+outdir = '/Volumes/DataRaid3/Data/ESO/HAWKI/UDS-Y'
+
+### END EDIT ###
+
+xmldir = os.path.join(outdir, 'xml')
+rawdir = os.path.join(outdir, 'raw')
+
+xml_files = glob.glob(os.path.join(xmldir, 'HAWKI.*.xml'))
+with open('do_all', 'w') as f:
+    f.write('export CPLDIR:%s\n' % cpldir)
+    for i,x in enumerate(xml_files):
+        f.write('./hawkired %s_ob%03d_hawki_%s %s %s %s\n' % (name, filt, i, rawdir, outdir, x))
