@@ -64,6 +64,7 @@ class HAWKIPipeline(object):
         self.indir = os.path.abspath(indir)
         self.outdir = os.path.abspath(outdir)
         self.rundir = os.path.join(self.outdir, self.runname)
+        self.cpldir = os.getenv('CPLDIR')
         self.caldata = {}
         self.caldata_file = os.path.join(self.rundir, '%s_caldata.json' % self.runname)
         self.stepdata = {}
@@ -79,6 +80,9 @@ class HAWKIPipeline(object):
         
         # Initialize CPL
         cpl.esorex.init()
+        
+        #get HAWKI pipeline version
+        hawki_ver = cpl.Recipe('hawki_sci_jitter').version[1]
         
         # Make the rundir
         mkdirs(self.rundir)
@@ -228,6 +232,8 @@ class HAWKIPipeline(object):
         if distx == []:
             self.logger.warning('Catagory attribute REF_DISTORTION_X not found! Trying DISTORTION_X')
             distx = ['%s.fits' % i.attrib['name'] for i in doc.findall('associatedFiles/association[@category="DISTORTION_X"]/mainFiles/file')]
+            if distx == []:
+                distx = os.path.join(self.cpldir, 'calib', 'hawki-%s' % hawki_ver, 'cal', 'distmap_x.fits')
         self.caldata['dst_x'] = self.linkData(distx, self.ref_dir, 'dst_x')
         # DISTORTION_Y image
         self.logger.info('Extracting y-distortion file name')
@@ -235,6 +241,8 @@ class HAWKIPipeline(object):
         if disty == []:
             self.logger.warning('Catagory attribute REF_DISTORTION_Y not found! Trying DISTORTION_Y')
             disty = ['%s.fits' % i.attrib['name'] for i in doc.findall('associatedFiles/association[@category="DISTORTION_Y"]/mainFiles/file')]
+            if disty == []:
+                disty = os.path.join(self.cpldir, 'calib', 'hawki-%s' % hawki_ver, 'cal', 'distmap_y.fits')
         self.caldata['dst_y'] = self.linkData(disty, self.ref_dir, 'dst_y')
         # get all observation types
         self.obstypes = self.caldata.keys()
