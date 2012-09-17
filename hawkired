@@ -81,8 +81,10 @@ class HAWKIPipeline(object):
         # Initialize CPL
         cpl.esorex.init()
         
-        #get HAWKI pipeline version
-        hawki_ver = cpl.Recipe('hawki_sci_jitter').version[1]
+        # Get HAWKI pipeline version
+        self.hawki_ver = cpl.Recipe('hawki_sci_jitter').version[1]
+        # Set path to calib directory
+        self.cal_dir = os.path.join(self.cpldir, 'calib', 'hawki-%s' % hawki_ver, 'cal')
         
         # Make the rundir
         mkdirs(self.rundir)
@@ -233,7 +235,7 @@ class HAWKIPipeline(object):
             self.logger.warning('Catagory attribute REF_DISTORTION_X not found! Trying DISTORTION_X')
             distx = ['%s.fits' % i.attrib['name'] for i in doc.findall('associatedFiles/association[@category="DISTORTION_X"]/mainFiles/file')]
             if distx == []:
-                distx = os.path.join(self.cpldir, 'calib', 'hawki-%s' % hawki_ver, 'cal', 'distmap_x.fits')
+                distx = os.path.join(self.cal_dir, 'distmap_x.fits')
         self.caldata['dst_x'] = self.linkData(distx, self.ref_dir, 'dst_x')
         # DISTORTION_Y image
         self.logger.info('Extracting y-distortion file name')
@@ -242,7 +244,7 @@ class HAWKIPipeline(object):
             self.logger.warning('Catagory attribute REF_DISTORTION_Y not found! Trying DISTORTION_Y')
             disty = ['%s.fits' % i.attrib['name'] for i in doc.findall('associatedFiles/association[@category="DISTORTION_Y"]/mainFiles/file')]
             if disty == []:
-                disty = os.path.join(self.cpldir, 'calib', 'hawki-%s' % hawki_ver, 'cal', 'distmap_y.fits')
+                disty = os.path.join(self.cal_dir, 'distmap_y.fits')
         self.caldata['dst_y'] = self.linkData(disty, self.ref_dir, 'dst_y')
         # get all observation types
         self.obstypes = self.caldata.keys()
@@ -663,7 +665,7 @@ def main():
     hawki.stepDetectObj(hawki.stepdata['final_combined_file'])
     
     # run photometric calibration using 2MASS catalog
-    hawki.stepPhotom2MASS(hawki.stepdata['final_combined_file'], hawki.stepdata['obj_stars_file'], '/Volumes/DataRaid3/Data/ESO/HAWKI/UDS-Y/master_2mass_tbl.fits')
+    hawki.stepPhotom2MASS(hawki.stepdata['final_combined_file'], hawki.stepdata['obj_stars_file'], os.path.join(hawki.cal_dir, 'master_2mass_tbl.fits'))
     
     # create stitched image
     hawki.stepStitch(hawki.stepdata['final_combined_file'])
