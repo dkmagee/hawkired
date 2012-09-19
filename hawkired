@@ -84,7 +84,7 @@ class HAWKIPipeline(object):
         # Get HAWKI pipeline version
         self.hawki_ver = cpl.Recipe('hawki_sci_jitter').version[1]
         # Set path to calib directory
-        self.cal_dir = os.path.join(self.cpldir, 'calib', 'hawki-%s' % hawki_ver, 'cal')
+        self.cal_dir = os.path.join(self.cpldir, 'calib', 'hawki-%s' % self.hawki_ver, 'cal')
         
         # Make the rundir
         mkdirs(self.rundir)
