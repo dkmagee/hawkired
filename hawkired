@@ -235,7 +235,8 @@ class HAWKIPipeline(object):
             self.logger.warning('Catagory attribute REF_DISTORTION_X not found! Trying DISTORTION_X')
             distx = ['%s.fits' % i.attrib['name'] for i in doc.findall('associatedFiles/association[@category="DISTORTION_X"]/mainFiles/file')]
             if distx == []:
-                distx = os.path.join(self.cal_dir, 'distmap_x.fits')
+                self.logger.warning('Catagory attribute DISTORTION_X not found! Using distmap_x.fits from HAWK-I calib directory')
+                distx = [os.path.join(self.cal_dir, 'distmap_x.fits')]
         self.caldata['dst_x'] = self.linkData(distx, self.ref_dir, 'dst_x')
         # DISTORTION_Y image
         self.logger.info('Extracting y-distortion file name')
@@ -244,7 +245,8 @@ class HAWKIPipeline(object):
             self.logger.warning('Catagory attribute REF_DISTORTION_Y not found! Trying DISTORTION_Y')
             disty = ['%s.fits' % i.attrib['name'] for i in doc.findall('associatedFiles/association[@category="DISTORTION_Y"]/mainFiles/file')]
             if disty == []:
-                disty = os.path.join(self.cal_dir, 'distmap_y.fits')
+                self.logger.warning('Catagory attribute DISTORTION_Y not found! Using distmap_y.fits from HAWK-I calib directory')
+                disty = [os.path.join(self.cal_dir, 'distmap_y.fits')]
         self.caldata['dst_y'] = self.linkData(disty, self.ref_dir, 'dst_y')
         # get all observation types
         self.obstypes = self.caldata.keys()
